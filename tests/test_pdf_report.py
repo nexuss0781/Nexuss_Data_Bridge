@@ -108,6 +108,29 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "positive integer"):
             await scan_pdf_files(client, "@books", limit=0)
 
+    async def test_pdf_scan_does_not_turn_nameless_photos_or_non_pdf_documents_into_pdfs(self):
+        nameless_photo = SimpleNamespace(
+            id=81,
+            media=SimpleNamespace(photo=object()),
+            document=None,
+            file=SimpleNamespace(name=None, size=321, mime_type="image/jpeg"),
+            message="channel photo",
+            date=None,
+        )
+        messages = [
+            make_message(82, "scan.pdf", mime_type="image/jpeg"),
+            make_message(83, "real.pdf", mime_type="application/pdf"),
+            make_message(84, "unknown-type.pdf", mime_type=None),
+            make_message(85, "   ", mime_type="image/jpeg"),
+            nameless_photo,
+        ]
+
+        records = await scan_pdf_files(FakeClient(messages), "@books")
+
+        self.assertEqual({record.message_id for record in records}, {83, 84})
+        fallback_record = next(record for record in records if record.message_id == 84)
+        self.assertEqual(fallback_record.file_name, "unknown-type.pdf")
+
     async def test_download_inspects_pdf_metadata_and_identifies_exact_duplicate_bytes(self):
         payload = make_pdf("Book metadata title", "Jane Author")
         messages = [
@@ -169,11 +192,15 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             "selected_group_count": 1,
             "selected_file_count": 2,
             "selected_size_bytes": 42,
+            "telegram_file_filter_total": 3,
+            "pdf_mime_count": 2,
+            "non_pdf_document_count": 1,
         }
         markdown = render_markdown_report(report)
         self.assertIn("Book caption", markdown)
         self.assertIn("Second line", markdown)
         self.assertIn("Only duplicate-name candidates were downloaded.", markdown)
+        self.assertIn("Telegram Files/document filter count: 3", markdown)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = write_pdf_report(report, temp_dir, "test-report", report_format="both")

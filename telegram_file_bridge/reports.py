@@ -82,16 +82,23 @@ def _pdf_record(message: Any) -> PdfFileRecord | None:
             raw_name = getattr(attribute, "file_name", None)
             if raw_name:
                 break
-    file_name = _safe_report_filename(raw_name, message_id)
+    real_name = str(raw_name).replace("\\", "/").rsplit("/", 1)[-1].strip() if raw_name else ""
+    file_name = _safe_report_filename(raw_name, message_id) if real_name else None
 
     mime_type = _clean_metadata(getattr(file_info, "mime_type", None))
     if mime_type is None and document is not None:
         mime_type = _clean_metadata(getattr(document, "mime_type", None))
-    is_pdf = file_name.casefold().endswith(".pdf") or bool(
-        mime_type and mime_type.casefold().split(";", 1)[0].strip() in {"application/pdf", "application/x-pdf"}
+    normalized_mime = (mime_type or "").casefold().split(";", 1)[0].strip()
+    has_pdf_mime = normalized_mime in {"application/pdf", "application/x-pdf"}
+    has_real_pdf_name = real_name.casefold().endswith(".pdf")
+    is_pdf_from_name = (
+        has_real_pdf_name
+        and document is not None
+        and normalized_mime in {"", "application/octet-stream", "binary/octet-stream"}
     )
-    if not is_pdf:
+    if not has_pdf_mime and not is_pdf_from_name:
         return None
+    file_name = file_name or f"telegram-{message_id}.pdf"
 
     caption = getattr(message, "message", None) or ""
     size = getattr(file_info, "size", None)
@@ -350,6 +357,15 @@ def render_markdown_report(report: dict[str, Any]) -> str:
                 "",
             ]
         )
+        if "telegram_file_filter_total" in scope:
+            lines.extend(
+                [
+                    f"- Telegram Files/document filter count: {scope['telegram_file_filter_total']}",
+                    f"- PDF MIME count: {scope['pdf_mime_count']}",
+                    f"- Other document items: {scope['non_pdf_document_count']}",
+                    "",
+                ]
+            )
     if not report["name_groups"]:
         lines.append("No PDF attachments were found in the scanned message history.")
         return "\n".join(lines) + "\n"
