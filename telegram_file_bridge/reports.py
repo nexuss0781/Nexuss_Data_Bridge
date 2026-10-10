@@ -290,6 +290,34 @@ def build_pdf_report(
         report_files.append(item)
 
     total_known_size = sum(item.size_bytes or 0 for item in ordered)
+    files_by_id = {item["message_id"]: item for item in report_files}
+    byte_identical_review = [
+        {
+            "sha256": group["sha256"],
+            "reference_message_id": group["canonical_message_id"],
+            "review_required": True,
+            "files": [
+                {
+                    key: files_by_id[message_id][key]
+                    for key in (
+                        "message_id",
+                        "file_name",
+                        "book_title",
+                        "size_bytes",
+                        "sha256",
+                        "content_category",
+                        "local_path",
+                        "pdf_title",
+                        "pdf_author",
+                        "page_count",
+                        "caption",
+                    )
+                }
+                for message_id in group["message_ids"]
+            ],
+        }
+        for group in content_groups
+    ]
     return {
         "report_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -313,6 +341,7 @@ def build_pdf_report(
         "detailed_comparison_message_ids": detailed_message_ids,
         "excluded_identical_message_ids": excluded_message_ids,
         "files": report_files,
+        "byte_identical_files_at_end": byte_identical_review,
     }
 
 
@@ -341,7 +370,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Downloaded and inspected: {summary['downloaded_files']}",
         "",
         "> Name grouping is a filename-based candidate only. Identical-content groups are confirmed only for downloaded files with matching SHA-256 hashes.",
-        "> When byte-identical details are filtered, the lowest Telegram message ID is retained as the representative; files without a verified hash remain in the detailed list.",
+        "> The inventory is ordered by name. Every verified byte-identical file is repeated in a separate final review section; no keep/delete decision is made here.",
         "",
     ]
     scope = report.get("analysis_scope")
@@ -370,27 +399,12 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         lines.append("No PDF attachments were found in the scanned message history.")
         return "\n".join(lines) + "\n"
 
-    if report["identical_content_groups"]:
-        lines.extend(["## Byte-identical content groups", ""])
-        for content_group in report["identical_content_groups"]:
-            lines.append(f"### SHA-256 `{content_group['sha256']}`")
-            lines.append("")
-            lines.append(f"- Canonical copy: message {content_group['canonical_message_id']}")
-            lines.append(
-                "- Byte-identical copies: "
-                + ", ".join(str(message_id) for message_id in content_group["duplicate_message_ids"])
-            )
-            lines.append(
-                "- Files: "
-                + ", ".join(f"`{_markdown_escape(file_name)}`" for file_name in content_group["file_names"])
-            )
-            lines.append("")
-
     files_by_name: dict[str, list[dict[str, Any]]] = {}
     for record in report["files"]:
         files_by_name.setdefault(record["normalized_name"], []).append(record)
     detailed_ids = set(report.get("detailed_comparison_message_ids", [item["message_id"] for item in report["files"]]))
 
+    lines.extend(["## PDF inventory (sorted by name)", ""])
     for group in report["name_groups"]:
         files = group["files"]
         heading = files[0]["file_name"]
@@ -404,7 +418,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         if omitted_count:
             lines.append(
                 f"> {omitted_count} verified byte-identical copy/copies omitted from per-file details; "
-                "see the SHA-256 groups above."
+                "see the byte-identical review section at the end."
             )
             lines.append("")
         for record in detailed_records:
@@ -438,6 +452,42 @@ def render_markdown_report(report: dict[str, Any]) -> str:
                 lines.extend(f"  > {_markdown_escape(line)}" for line in record["caption"].splitlines())
             else:
                 lines.append("  > *(none)*")
+            lines.append("")
+
+    review_groups = report.get("byte_identical_files_at_end", [])
+    if review_groups:
+        lines.extend(
+            [
+                "## Byte-identical files — data scientist review",
+                "",
+                "All entries in this section remain in the name-sorted inventory above. No files were removed; review these byte-identical copies to decide whether to keep or eliminate them in a separate workflow.",
+                "",
+            ]
+        )
+        for index, group in enumerate(review_groups, start=1):
+            lines.append(f"### Duplicate set {index}: SHA-256 `{group['sha256']}`")
+            lines.append("")
+            for record in group["files"]:
+                is_reference = record["message_id"] == group["reference_message_id"]
+                label = "Reference entry (lowest message ID; no keep/delete decision)" if is_reference else "Byte-identical copy (review keep/eliminate)"
+                lines.append(f"- **{label}**")
+                lines.append(f"  - Book/title: {_markdown_escape(record['book_title'])}")
+                lines.append(f"  - File: `{_markdown_escape(record['file_name'])}`")
+                lines.append(f"  - Message ID: {record['message_id']}")
+                lines.append(f"  - Size: {record['size_bytes'] if record['size_bytes'] is not None else 'unknown'} bytes")
+                if record["local_path"]:
+                    lines.append(f"  - Included PDF: `{_markdown_escape(record['local_path'])}`")
+                if record["pdf_title"]:
+                    lines.append(f"  - Embedded title: {_markdown_escape(record['pdf_title'])}")
+                if record["pdf_author"]:
+                    lines.append(f"  - PDF author: {_markdown_escape(record['pdf_author'])}")
+                if record["page_count"] is not None:
+                    lines.append(f"  - Pages: {record['page_count']}")
+                lines.append("  - Caption:")
+                if record["caption"].strip():
+                    lines.extend(f"    > {_markdown_escape(line)}" for line in record["caption"].splitlines())
+                else:
+                    lines.append("    > *(none)*")
             lines.append("")
 
     return "\n".join(lines) + "\n"

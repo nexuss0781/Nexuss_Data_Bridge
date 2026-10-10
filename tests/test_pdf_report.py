@@ -166,6 +166,19 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(report_files[11]["content_category"], "canonical_byte_identical_copy")
             self.assertEqual(report_files[12]["content_category"], "byte_identical_copy")
             self.assertEqual(report_files[12]["identical_to_message_id"], 11)
+            self.assertEqual(len(report["files"]), 2)
+            self.assertEqual(len(report["byte_identical_files_at_end"]), 1)
+            self.assertEqual(
+                [item["message_id"] for item in report["byte_identical_files_at_end"][0]["files"]],
+                [11, 12],
+            )
+            full_markdown = render_markdown_report(report)
+            review_heading = "## Byte-identical files — data scientist review"
+            self.assertLess(full_markdown.index("## PDF inventory (sorted by name)"), full_markdown.index(review_heading))
+            self.assertIn("metadata title.PDF", full_markdown.split(review_heading, 1)[0])
+            self.assertIn("metadata-title.pdf", full_markdown.split(review_heading, 1)[0])
+            self.assertIn("Message ID: 11", full_markdown.split(review_heading, 1)[1])
+            self.assertIn("Message ID: 12", full_markdown.split(review_heading, 1)[1])
 
             filtered = build_pdf_report("@books", enriched, exclude_byte_identical_details=True)
             filtered_by_id = {item["message_id"]: item for item in filtered["files"]}
@@ -178,8 +191,10 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(filtered_by_id[12]["caption"], "Another caption")
             self.assertIn("Byte-identical copies omitted from details: 1", filtered_markdown)
             self.assertIn("Content category: `canonical_byte_identical_copy`", filtered_markdown)
-            self.assertNotIn("Content category: `byte_identical_copy`", filtered_markdown)
-            self.assertNotIn("### Another caption", filtered_markdown)
+            filtered_main, filtered_review = filtered_markdown.split(review_heading, 1)
+            self.assertNotIn("Content category: `byte_identical_copy`", filtered_main)
+            self.assertIn("Byte-identical copy (review keep/eliminate)", filtered_review)
+            self.assertIn("Another caption", filtered_review)
 
     async def test_writes_complete_json_and_markdown_reports(self):
         records = await scan_pdf_files(
