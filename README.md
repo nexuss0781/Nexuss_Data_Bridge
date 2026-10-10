@@ -54,7 +54,7 @@ Scan the channel's full message history and write a grouped report of PDF attach
 tgbridge report --chat @source_channel --out ./reports
 ```
 
-By default the command creates both a JSON report (complete machine-readable records) and a Markdown report. It lists the PDF filename, likely book title, size, MIME type, Telegram message/document IDs, date, and the complete caption, with files sorted and grouped by normalized filename. This groups likely redundant names together, but matching names alone do not prove two PDFs contain identical bytes.
+By default the command creates both a JSON report (complete machine-readable records) and a Markdown report. It lists the PDF filename, likely book title, size, MIME type, Telegram message/document IDs, date, and the complete caption. Rows with a SHA-256-confirmed byte-identical match appear first; each priority section is then sorted by normalized filename. Matching names alone do not prove two PDFs contain identical bytes.
 
 To include the actual PDFs in a sibling folder and inspect embedded PDF title/author/subject metadata, page counts, and exact content duplicates, opt in to downloading them:
 
@@ -74,6 +74,7 @@ This filter requires `--download-pdfs`. It does not delete records: all files re
 
 Choose `--format json`, `--format markdown`, or `--format both` to control report outputs.
 The Markdown inventory and final review section use compact tables. Captions remain in their table cells, with embedded line breaks shown as `↵`; the Markdown tables omit the content-category column, while JSON retains those classifications.
+Both report formats include Boolean `Duplicate`, `Status`, and `Processed` fields. `Duplicate` is true only for records in a verified identical-byte set; false does not prove uniqueness when a PDF was not hashed. `Status` defaults to true (enabled for batch selection), and `Processed` defaults to false until plaintext conversion succeeds. Setting `Status` to false is the analyst's opt-out for a status-aware batch operation.
 
 ## Size and storage
 

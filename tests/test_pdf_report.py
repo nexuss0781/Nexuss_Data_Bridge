@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from telegram_file_bridge.reports import (
     download_pdf_files,
     render_markdown_report,
     scan_pdf_files,
+    select_forward_candidates,
     write_pdf_report,
 )
 
@@ -108,6 +110,60 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, "positive integer"):
             await scan_pdf_files(client, "@books", limit=0)
 
+    async def test_duplicate_priority_and_boolean_state_columns(self):
+        records = await scan_pdf_files(
+            FakeClient(
+                [
+                    make_message(31, "Z-duplicate.pdf"),
+                    make_message(32, "A-unverified.pdf"),
+                    make_message(33, "B-duplicate.pdf"),
+                ]
+            ),
+            "@books",
+        )
+        records = [
+            replace(record, sha256="a" * 64) if record.message_id in {31, 33} else record
+            for record in records
+        ]
+
+        report = build_pdf_report("@books", records)
+
+        self.assertEqual([item["message_id"] for item in report["files"]], [33, 31, 32])
+        by_id = {item["message_id"]: item for item in report["files"]}
+        self.assertTrue(by_id[31]["duplicate"])
+        self.assertTrue(by_id[33]["duplicate"])
+        self.assertFalse(by_id[32]["duplicate"])
+        self.assertTrue(all(item["status"] is True for item in report["files"]))
+        self.assertTrue(all(item["processed"] is False for item in report["files"]))
+        self.assertEqual(report["summary"]["duplicate_files"], 2)
+        self.assertEqual(report["summary"]["status_enabled_files"], 3)
+        self.assertEqual(report["summary"]["processed_files"], 0)
+        self.assertEqual(
+            [item["message_id"] for item in select_forward_candidates(report)],
+            [33, 31, 32],
+        )
+
+        changed = [
+            replace(record, status=False) if record.message_id == 33 else
+            replace(record, processed=True) if record.message_id == 32 else
+            record
+            for record in records
+        ]
+        changed_report = build_pdf_report("@books", changed)
+        changed_by_id = {item["message_id"]: item for item in changed_report["files"]}
+        self.assertFalse(changed_by_id[33]["status"])
+        self.assertTrue(changed_by_id[32]["processed"])
+        self.assertEqual([item["message_id"] for item in select_forward_candidates(changed_report)], [31])
+
+        markdown = render_markdown_report(report)
+        header = "| Duplicate | Status | Processed | File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |"
+        self.assertIn(header, markdown)
+        main = markdown.split("## PDF inventory (duplicates first, then sorted by name)\n", 1)[1].split(
+            "## Byte-identical files — data scientist review", 1
+        )[0]
+        rows = [line for line in main.splitlines() if line.startswith("| ") and not line.startswith("|---") and line != header]
+        self.assertEqual([line.split("|")[1].strip() for line in rows], ["True", "True", "False"])
+
     async def test_pdf_scan_does_not_turn_nameless_photos_or_non_pdf_documents_into_pdfs(self):
         nameless_photo = SimpleNamespace(
             id=81,
@@ -174,8 +230,8 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             )
             full_markdown = render_markdown_report(report)
             review_heading = "## Byte-identical files — data scientist review"
-            self.assertLess(full_markdown.index("## PDF inventory (sorted by name)"), full_markdown.index(review_heading))
-            self.assertIn("| File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |", full_markdown)
+            self.assertLess(full_markdown.index("## PDF inventory (duplicates first, then sorted by name)"), full_markdown.index(review_heading))
+            self.assertIn("| Duplicate | Status | Processed | File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |", full_markdown)
             self.assertNotIn("Content category", full_markdown)
             full_main, full_review = full_markdown.split(review_heading, 1)
             self.assertIn("metadata title.PDF", full_main)

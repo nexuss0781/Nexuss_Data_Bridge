@@ -32,6 +32,8 @@ class PdfFileRecord:
     pdf_subject: str | None = None
     page_count: int | None = None
     analysis_error: str | None = None
+    status: bool = True
+    processed: bool = False
 
 
 def _safe_report_filename(value: Any, message_id: int) -> str:
@@ -273,14 +275,17 @@ def build_pdf_report(
         canonical_id = canonical_by_hash.get(record.sha256 or "")
         if record.sha256 and len(matching_hash_files) > 1:
             is_copy = record.message_id != canonical_id
+            item["duplicate"] = True
             item["content_category"] = "byte_identical_copy" if is_copy else "canonical_byte_identical_copy"
             item["content_group_sha256"] = record.sha256
             item["identical_to_message_id"] = canonical_id if is_copy else None
         elif record.sha256:
+            item["duplicate"] = False
             item["content_category"] = "verified_unique_content"
             item["content_group_sha256"] = None
             item["identical_to_message_id"] = None
         else:
+            item["duplicate"] = False
             item["content_category"] = "not_compared"
             item["content_group_sha256"] = None
             item["identical_to_message_id"] = None
@@ -291,6 +296,19 @@ def build_pdf_report(
         else:
             detailed_message_ids.append(record.message_id)
         report_files.append(item)
+
+    report_files.sort(
+        key=lambda item: (
+            not item["duplicate"],
+            item["normalized_name"],
+            item["file_name"].casefold(),
+            item["message_id"],
+        )
+    )
+    detailed_set = set(detailed_message_ids)
+    excluded_set = set(excluded_message_ids)
+    detailed_message_ids = [item["message_id"] for item in report_files if item["message_id"] in detailed_set]
+    excluded_message_ids = [item["message_id"] for item in report_files if item["message_id"] in excluded_set]
 
     total_known_size = sum(item.size_bytes or 0 for item in ordered)
     files_by_id = {item["message_id"]: item for item in report_files}
@@ -308,6 +326,9 @@ def build_pdf_report(
                         "book_title",
                         "size_bytes",
                         "sha256",
+                        "duplicate",
+                        "status",
+                        "processed",
                         "content_category",
                         "local_path",
                         "pdf_title",
@@ -322,7 +343,7 @@ def build_pdf_report(
         for group in content_groups
     ]
     return {
-        "report_version": 2,
+        "report_version": 3,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_chat": chat,
         "summary": {
@@ -337,6 +358,9 @@ def build_pdf_report(
             "files_with_captions": sum(bool(item.caption.strip()) for item in ordered),
             "downloaded_files": sum(item.local_path is not None for item in ordered),
             "files_with_pdf_metadata": sum(item.page_count is not None for item in ordered),
+            "duplicate_files": sum(item["duplicate"] for item in report_files),
+            "status_enabled_files": sum(item["status"] for item in report_files),
+            "processed_files": sum(item["processed"] for item in report_files),
         },
         "name_groups": name_groups,
         "identical_content_groups": content_groups,
@@ -362,6 +386,19 @@ def _markdown_table_cell(value: Any) -> str:
     return _markdown_escape(text).replace("\n", " ↵ ")
 
 
+def select_forward_candidates(report: dict[str, Any]) -> list[dict[str, Any]]:
+    """Select enabled, unprocessed report rows for a future batch forward action."""
+    if report.get("report_version") != 3:
+        raise ValueError("Status-aware forwarding requires a version 3 PDF report.")
+    candidates = []
+    for record in report.get("files", []):
+        if not isinstance(record.get("status"), bool) or not isinstance(record.get("processed"), bool):
+            raise ValueError(f"PDF message {record.get('message_id')} has invalid Status/Processed Boolean values.")
+        if record["status"] is True and record["processed"] is False:
+            candidates.append(record)
+    return candidates
+
+
 def render_markdown_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     lines = [
@@ -378,9 +415,13 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Known total size: {summary['total_known_size_bytes']} bytes",
         f"- Files with captions: {summary['files_with_captions']}",
         f"- Downloaded and inspected: {summary['downloaded_files']}",
+        f"- Duplicate-flagged files: {summary['duplicate_files']}",
+        f"- Status enabled: {summary['status_enabled_files']}",
+        f"- Processed: {summary['processed_files']}",
         "",
         "> Name grouping is a filename-based candidate only. Identical-content groups are confirmed only for downloaded files with matching SHA-256 hashes.",
-        "> The inventory is ordered by name. Every verified byte-identical file is repeated in a separate final review section; no keep/delete decision is made here.",
+        "> Duplicate=True means the PDF is in a SHA-256-confirmed byte-identical set. Duplicate=False means no duplicate was confirmed; it is not proof of uniqueness when a file was not downloaded and hashed.",
+        "> Rows with Duplicate=True appear first, then each priority section is ordered by name. Status defaults to True; Processed defaults to False. The report never removes files or makes a keep/delete decision.",
         "",
     ]
     scope = report.get("analysis_scope")
@@ -410,7 +451,7 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         return "\n".join(lines) + "\n"
 
     detailed_ids = set(report.get("detailed_comparison_message_ids", [item["message_id"] for item in report["files"]]))
-    lines.extend(["## PDF inventory (sorted by name)", ""])
+    lines.extend(["## PDF inventory (duplicates first, then sorted by name)", ""])
     if report["summary"]["excluded_byte_identical_details"]:
         lines.extend(
             [
@@ -420,8 +461,8 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         )
     lines.extend(
         [
-            "| File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |",
-            "|---|---|---:|---|---:|---|---|",
+            "| Duplicate | Status | Processed | File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |",
+            "|---|---|---|---|---|---:|---|---:|---|---|",
         ]
     )
     for record in report["files"]:
@@ -446,6 +487,9 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             details.append(f"Inspection note: {record['analysis_error']}")
         caption = record["caption"] if record["caption"].strip() else "(none)"
         cells = [
+            record["duplicate"],
+            record["status"],
+            record["processed"],
             record["file_name"],
             record["book_title"],
             record["message_id"],
@@ -463,10 +507,10 @@ def render_markdown_report(report: dict[str, Any]) -> str:
                 "",
                 "## Byte-identical files — data scientist review",
                 "",
-                "Every row below is still included in the name-sorted inventory above. Rows sharing a SHA-256 are byte-identical; no files are removed and the keep/eliminate decision is left to the reviewer.",
+                "Every row below is still included in the prioritized inventory above. Rows sharing a SHA-256 are byte-identical; no files are removed and the keep/eliminate decision is left to the reviewer.",
                 "",
-                "| File | Book/title | Telegram message ID | Size (bytes) | SHA-256 | PDF details | Caption |",
-                "|---|---|---:|---:|---|---|---|",
+                "| Duplicate | Status | Processed | File | Book/title | Telegram message ID | Size (bytes) | SHA-256 | PDF details | Caption |",
+                "|---|---|---|---|---|---:|---:|---|---|---|",
             ]
         )
         for group in review_groups:
@@ -481,6 +525,9 @@ def render_markdown_report(report: dict[str, Any]) -> str:
                 if record["page_count"] is not None:
                     details.append(f"Pages: {record['page_count']}")
                 cells = [
+                    record["duplicate"],
+                    record["status"],
+                    record["processed"],
                     record["file_name"],
                     record["book_title"],
                     record["message_id"],
