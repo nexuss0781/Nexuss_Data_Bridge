@@ -164,9 +164,16 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             "@books",
         )
         report = build_pdf_report("@books", records)
+        report["analysis_scope"] = {
+            "description": "Only duplicate-name candidates were downloaded.",
+            "selected_group_count": 1,
+            "selected_file_count": 2,
+            "selected_size_bytes": 42,
+        }
         markdown = render_markdown_report(report)
         self.assertIn("Book caption", markdown)
         self.assertIn("Second line", markdown)
+        self.assertIn("Only duplicate-name candidates were downloaded.", markdown)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             paths = write_pdf_report(report, temp_dir, "test-report", report_format="both")

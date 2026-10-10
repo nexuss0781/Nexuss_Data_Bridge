@@ -337,6 +337,19 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         "> When byte-identical details are filtered, the lowest Telegram message ID is retained as the representative; files without a verified hash remain in the detailed list.",
         "",
     ]
+    scope = report.get("analysis_scope")
+    if scope:
+        lines.extend(
+            [
+                "## Download scope",
+                "",
+                _markdown_escape(scope["description"]),
+                f"- Candidate filename groups: {scope['selected_group_count']}",
+                f"- Candidate files: {scope['selected_file_count']}",
+                f"- Candidate size: {scope['selected_size_bytes']} bytes",
+                "",
+            ]
+        )
     if not report["name_groups"]:
         lines.append("No PDF attachments were found in the scanned message history.")
         return "\n".join(lines) + "\n"
