@@ -73,6 +73,7 @@ tgbridge report --chat @source_channel --out ./reports --download-pdfs --exclude
 This filter requires `--download-pdfs`. It does not delete records: all files remain in the complete JSON inventory and the final byte-identical review section. The lowest Telegram message ID is only a reference entry, not a keep recommendation; files whose download/hash check fails remain in the main inventory and are marked as not compared.
 
 Choose `--format json`, `--format markdown`, or `--format both` to control report outputs.
+The Markdown inventory and final review section use compact tables. Captions remain in their table cells, with embedded line breaks shown as `↵`; the Markdown tables omit the content-category column, while JSON retains those classifications.
 
 ## Size and storage
 

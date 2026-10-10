@@ -175,10 +175,13 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             full_markdown = render_markdown_report(report)
             review_heading = "## Byte-identical files — data scientist review"
             self.assertLess(full_markdown.index("## PDF inventory (sorted by name)"), full_markdown.index(review_heading))
-            self.assertIn("metadata title.PDF", full_markdown.split(review_heading, 1)[0])
-            self.assertIn("metadata-title.pdf", full_markdown.split(review_heading, 1)[0])
-            self.assertIn("Message ID: 11", full_markdown.split(review_heading, 1)[1])
-            self.assertIn("Message ID: 12", full_markdown.split(review_heading, 1)[1])
+            self.assertIn("| File | Book/title | Telegram message ID | Date | Size (bytes) | PDF details | Caption |", full_markdown)
+            self.assertNotIn("Content category", full_markdown)
+            full_main, full_review = full_markdown.split(review_heading, 1)
+            self.assertIn("metadata title.PDF", full_main)
+            self.assertIn("metadata-title.pdf", full_main)
+            self.assertIn("| 11 |", full_review)
+            self.assertIn("| 12 |", full_review)
 
             filtered = build_pdf_report("@books", enriched, exclude_byte_identical_details=True)
             filtered_by_id = {item["message_id"]: item for item in filtered["files"]}
@@ -190,10 +193,10 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(filtered["excluded_identical_message_ids"], [12])
             self.assertEqual(filtered_by_id[12]["caption"], "Another caption")
             self.assertIn("Byte-identical copies omitted from details: 1", filtered_markdown)
-            self.assertIn("Content category: `canonical_byte_identical_copy`", filtered_markdown)
             filtered_main, filtered_review = filtered_markdown.split(review_heading, 1)
-            self.assertNotIn("Content category: `byte_identical_copy`", filtered_main)
-            self.assertIn("Byte-identical copy (review keep/eliminate)", filtered_review)
+            self.assertIn("metadata-title.pdf", filtered_main)
+            self.assertNotIn("metadata title.PDF", filtered_main)
+            self.assertIn("metadata title.PDF", filtered_review)
             self.assertIn("Another caption", filtered_review)
 
     async def test_writes_complete_json_and_markdown_reports(self):
@@ -214,6 +217,9 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
         markdown = render_markdown_report(report)
         self.assertIn("Book caption", markdown)
         self.assertIn("Second line", markdown)
+        self.assertIn("Book caption ↵ Second line", markdown)
+        self.assertIn("| Caption |", markdown)
+        self.assertNotIn("Content category", markdown)
         self.assertIn("Only duplicate-name candidates were downloaded.", markdown)
         self.assertIn("Telegram Files/document filter count: 3", markdown)
 
