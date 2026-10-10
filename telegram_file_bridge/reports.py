@@ -202,7 +202,12 @@ async def download_pdf_files(
     return sorted(enriched, key=_record_sort_key)
 
 
-def build_pdf_report(chat: str, records: list[PdfFileRecord]) -> dict[str, Any]:
+def build_pdf_report(
+    chat: str,
+    records: list[PdfFileRecord],
+    *,
+    exclude_byte_identical_details: bool = False,
+) -> dict[str, Any]:
     ordered = sorted(records, key=_record_sort_key)
     by_name: dict[str, list[PdfFileRecord]] = {}
     by_hash: dict[str, list[PdfFileRecord]] = {}
@@ -229,19 +234,57 @@ def build_pdf_report(chat: str, records: list[PdfFileRecord]) -> dict[str, Any]:
         }
         for key, items in sorted(by_name.items())
     ]
-    content_groups = [
-        {
-            "sha256": digest,
-            "message_ids": [item.message_id for item in sorted(items, key=lambda item: item.message_id)],
-            "file_names": [item.file_name for item in sorted(items, key=lambda item: item.message_id)],
-        }
-        for digest, items in sorted(by_hash.items())
-        if len(items) > 1
-    ]
+    canonical_by_hash = {
+        digest: min(items, key=lambda item: item.message_id).message_id
+        for digest, items in by_hash.items()
+    }
+    content_groups = []
+    for digest, items in sorted(by_hash.items()):
+        if len(items) <= 1:
+            continue
+        ordered_items = sorted(items, key=lambda item: item.message_id)
+        canonical_id = ordered_items[0].message_id
+        content_groups.append(
+            {
+                "sha256": digest,
+                "canonical_message_id": canonical_id,
+                "duplicate_message_ids": [item.message_id for item in ordered_items[1:]],
+                "message_ids": [item.message_id for item in ordered_items],
+                "file_names": [item.file_name for item in ordered_items],
+            }
+        )
+
+    report_files: list[dict[str, Any]] = []
+    detailed_message_ids: list[int] = []
+    excluded_message_ids: list[int] = []
+    for record in ordered:
+        item = asdict(record)
+        matching_hash_files = by_hash.get(record.sha256 or "", [])
+        canonical_id = canonical_by_hash.get(record.sha256 or "")
+        if record.sha256 and len(matching_hash_files) > 1:
+            is_copy = record.message_id != canonical_id
+            item["content_category"] = "byte_identical_copy" if is_copy else "canonical_byte_identical_copy"
+            item["content_group_sha256"] = record.sha256
+            item["identical_to_message_id"] = canonical_id if is_copy else None
+        elif record.sha256:
+            item["content_category"] = "verified_unique_content"
+            item["content_group_sha256"] = None
+            item["identical_to_message_id"] = None
+        else:
+            item["content_category"] = "not_compared"
+            item["content_group_sha256"] = None
+            item["identical_to_message_id"] = None
+
+        is_identical_copy = item["content_category"] == "byte_identical_copy"
+        if exclude_byte_identical_details and is_identical_copy:
+            excluded_message_ids.append(record.message_id)
+        else:
+            detailed_message_ids.append(record.message_id)
+        report_files.append(item)
 
     total_known_size = sum(item.size_bytes or 0 for item in ordered)
     return {
-        "report_version": 1,
+        "report_version": 2,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "source_chat": chat,
         "summary": {
@@ -249,6 +292,9 @@ def build_pdf_report(chat: str, records: list[PdfFileRecord]) -> dict[str, Any]:
             "unique_normalized_names": len(by_name),
             "possible_duplicate_name_groups": sum(len(items) > 1 for items in by_name.values()),
             "identical_content_groups": len(content_groups),
+            "byte_identical_copies": sum(len(items) - 1 for items in by_hash.values() if len(items) > 1),
+            "detailed_comparison_files": len(detailed_message_ids),
+            "excluded_byte_identical_details": len(excluded_message_ids),
             "total_known_size_bytes": total_known_size,
             "files_with_captions": sum(bool(item.caption.strip()) for item in ordered),
             "downloaded_files": sum(item.local_path is not None for item in ordered),
@@ -256,7 +302,10 @@ def build_pdf_report(chat: str, records: list[PdfFileRecord]) -> dict[str, Any]:
         },
         "name_groups": name_groups,
         "identical_content_groups": content_groups,
-        "files": [asdict(item) for item in ordered],
+        "exclude_byte_identical_details": exclude_byte_identical_details,
+        "detailed_comparison_message_ids": detailed_message_ids,
+        "excluded_identical_message_ids": excluded_message_ids,
+        "files": report_files,
     }
 
 
@@ -277,20 +326,41 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         f"- Unique normalized names: {summary['unique_normalized_names']}",
         f"- Possible duplicate-name groups: {summary['possible_duplicate_name_groups']}",
         f"- Identical-content groups (verified by SHA-256): {summary['identical_content_groups']}",
+        f"- Byte-identical copies: {summary['byte_identical_copies']}",
+        f"- Files with detailed entries: {summary['detailed_comparison_files']}",
+        f"- Byte-identical copies omitted from details: {summary['excluded_byte_identical_details']}",
         f"- Known total size: {summary['total_known_size_bytes']} bytes",
         f"- Files with captions: {summary['files_with_captions']}",
         f"- Downloaded and inspected: {summary['downloaded_files']}",
         "",
         "> Name grouping is a filename-based candidate only. Identical-content groups are confirmed only for downloaded files with matching SHA-256 hashes.",
+        "> When byte-identical details are filtered, the lowest Telegram message ID is retained as the representative; files without a verified hash remain in the detailed list.",
         "",
     ]
     if not report["name_groups"]:
         lines.append("No PDF attachments were found in the scanned message history.")
         return "\n".join(lines) + "\n"
 
+    if report["identical_content_groups"]:
+        lines.extend(["## Byte-identical content groups", ""])
+        for content_group in report["identical_content_groups"]:
+            lines.append(f"### SHA-256 `{content_group['sha256']}`")
+            lines.append("")
+            lines.append(f"- Canonical copy: message {content_group['canonical_message_id']}")
+            lines.append(
+                "- Byte-identical copies: "
+                + ", ".join(str(message_id) for message_id in content_group["duplicate_message_ids"])
+            )
+            lines.append(
+                "- Files: "
+                + ", ".join(f"`{_markdown_escape(file_name)}`" for file_name in content_group["file_names"])
+            )
+            lines.append("")
+
     files_by_name: dict[str, list[dict[str, Any]]] = {}
     for record in report["files"]:
         files_by_name.setdefault(record["normalized_name"], []).append(record)
+    detailed_ids = set(report.get("detailed_comparison_message_ids", [item["message_id"] for item in report["files"]]))
 
     for group in report["name_groups"]:
         files = group["files"]
@@ -299,11 +369,21 @@ def render_markdown_report(report: dict[str, Any]) -> str:
         if group["possible_duplicates"]:
             lines.append(f"**Possible duplicate group:** {len(files)} files with the same normalized name. Compare file sizes and hashes where available.")
             lines.append("")
-        for record in files_by_name.get(group["normalized_name"], []):
+        group_records = files_by_name.get(group["normalized_name"], [])
+        detailed_records = [record for record in group_records if record["message_id"] in detailed_ids]
+        omitted_count = len(group_records) - len(detailed_records)
+        if omitted_count:
+            lines.append(
+                f"> {omitted_count} verified byte-identical copy/copies omitted from per-file details; "
+                "see the SHA-256 groups above."
+            )
+            lines.append("")
+        for record in detailed_records:
             lines.append(f"### {_markdown_escape(record['book_title'])}")
             lines.append("")
             lines.append(f"- File: `{_markdown_escape(record['file_name'])}`")
             lines.append(f"- Message ID: {record['message_id']}")
+            lines.append(f"- Content category: `{record['content_category']}`")
             lines.append(f"- Date: {_markdown_escape(record['message_date'] or 'unknown')}")
             lines.append(f"- Title source: {_markdown_escape(record['title_source'])}")
             lines.append(f"- Size: {record['size_bytes'] if record['size_bytes'] is not None else 'unknown'} bytes")

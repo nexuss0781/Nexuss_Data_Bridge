@@ -54,6 +54,11 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="also download each PDF, inspect its metadata/pages, and verify duplicate content by SHA-256",
     )
+    report.add_argument(
+        "--exclude-byte-identical-details",
+        action="store_true",
+        help="omit verified byte-identical copies from per-file details while retaining them in the full inventory",
+    )
     return parser
 
 
@@ -131,7 +136,11 @@ async def _run_with_client(args: argparse.Namespace, config: Config) -> int:
                     pdf_directory,
                     report_root=output_dir,
                 )
-            report_data = build_pdf_report(args.chat, records)
+            report_data = build_pdf_report(
+                args.chat,
+                records,
+                exclude_byte_identical_details=args.exclude_byte_identical_details,
+            )
             report_paths = write_pdf_report(
                 report_data,
                 output_dir,
@@ -190,6 +199,8 @@ async def _run_with_client(args: argparse.Namespace, config: Config) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
+    if args.command == "report" and args.exclude_byte_identical_details and not args.download_pdfs:
+        parser.error("--exclude-byte-identical-details requires --download-pdfs so the files can be hash-verified")
     try:
         if args.command == "init":
             return _init(args.env_file)

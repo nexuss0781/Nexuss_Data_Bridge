@@ -97,6 +97,10 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(records[0].file_name, "annual report")
         self.assertEqual(records[3].file_name, "Other.PDF")
         self.assertEqual(records[1].message_date, "2025-01-02T00:00:00+00:00")
+        filtered = build_pdf_report("@books", records, exclude_byte_identical_details=True)
+        self.assertEqual(filtered["detailed_comparison_message_ids"], [4, 1, 3, 5])
+        self.assertEqual(filtered["summary"]["excluded_byte_identical_details"], 0)
+        self.assertTrue(all(item["content_category"] == "not_compared" for item in filtered["files"]))
 
     async def test_message_limit_is_validated_and_respected(self):
         client = FakeClient([make_message(1, "a.pdf"), make_message(2, "b.pdf")])
@@ -135,6 +139,25 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(enriched_by_id[11].sha256)
             self.assertTrue((Path(temp_dir) / enriched_by_id[11].local_path).is_file())
 
+            report_files = {item["message_id"]: item for item in report["files"]}
+            self.assertEqual(report_files[11]["content_category"], "canonical_byte_identical_copy")
+            self.assertEqual(report_files[12]["content_category"], "byte_identical_copy")
+            self.assertEqual(report_files[12]["identical_to_message_id"], 11)
+
+            filtered = build_pdf_report("@books", enriched, exclude_byte_identical_details=True)
+            filtered_by_id = {item["message_id"]: item for item in filtered["files"]}
+            filtered_markdown = render_markdown_report(filtered)
+            self.assertEqual(len(filtered["files"]), 2)
+            self.assertEqual(filtered["summary"]["detailed_comparison_files"], 1)
+            self.assertEqual(filtered["summary"]["excluded_byte_identical_details"], 1)
+            self.assertEqual(filtered["detailed_comparison_message_ids"], [11])
+            self.assertEqual(filtered["excluded_identical_message_ids"], [12])
+            self.assertEqual(filtered_by_id[12]["caption"], "Another caption")
+            self.assertIn("Byte-identical copies omitted from details: 1", filtered_markdown)
+            self.assertIn("Content category: `canonical_byte_identical_copy`", filtered_markdown)
+            self.assertNotIn("Content category: `byte_identical_copy`", filtered_markdown)
+            self.assertNotIn("### Another caption", filtered_markdown)
+
     async def test_writes_complete_json_and_markdown_reports(self):
         records = await scan_pdf_files(
             FakeClient([make_message(9, "Evidence.pdf", caption="Book caption\nSecond line")]),
@@ -156,8 +179,11 @@ class PdfReportTests(unittest.IsolatedAsyncioTestCase):
     def test_cli_report_format_is_available_to_dispatch(self):
         from telegram_file_bridge.cli import _parser
 
-        args = _parser().parse_args(["report", "--chat", "@books", "--format", "json"])
+        args = _parser().parse_args(
+            ["report", "--chat", "@books", "--format", "json", "--download-pdfs", "--exclude-byte-identical-details"]
+        )
         self.assertEqual(args.report_format, "json")
+        self.assertTrue(args.exclude_byte_identical_details)
 
 
 if __name__ == "__main__":

@@ -62,7 +62,15 @@ To include the actual PDFs in a sibling folder and inspect embedded PDF title/au
 tgbridge report --chat @source_channel --out ./reports --download-pdfs
 ```
 
-Downloaded PDFs are stored beside the report in a channel-and-run-specific folder. SHA-256 groups confirm byte-identical files among the PDFs that were downloaded. Reports and downloaded files are written with owner-only permissions where supported. The command scans all accessible message history unless `--limit N` is supplied; use the limit for a smaller test run. If the PDF itself has no embedded title, the report uses its filename (or caption as a fallback), so that fallback is an identifier, not a claim that document text was semantically verified.
+Downloaded PDFs are stored beside the report in a channel-and-run-specific folder. SHA-256 groups confirm byte-identical files among the PDFs that were downloaded, and each record is categorized as a verified unique file, the canonical copy, another byte-identical copy, or not compared. Reports and downloaded files are written with owner-only permissions where supported. The command scans all accessible message history unless `--limit N` is supplied; use the limit for a smaller test run. If the PDF itself has no embedded title, the report uses its filename (or caption as a fallback), so that fallback is an identifier, not a claim that document text was semantically verified.
+
+For a shorter detailed comparison, filter out verified copies while keeping them in the complete JSON inventory and in the compact SHA-256 duplicate groups:
+
+```bash
+tgbridge report --chat @source_channel --out ./reports --download-pdfs --exclude-byte-identical-details
+```
+
+This filter requires `--download-pdfs`. Within each identical-byte group, the lowest Telegram message ID is kept as the representative; files whose download/hash check fails remain in the detailed comparison and are marked as not compared.
 
 Choose `--format json`, `--format markdown`, or `--format both` to control report outputs.
 
