@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "telegram-file-bridge"
+version = "1.0.0"
+description = "A small Telegram MTProto file bridge with a sign-in page"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["Telethon>=1.36,<2", "fastapi>=0.115,<1", "uvicorn>=0.30,<1", "pypdf>=5,<7"]
+
+[project.optional-dependencies]
+test = ["httpx>=0.27,<1"]
+
+[project.scripts]
+tgbridge = "telegram_file_bridge.cli:main"
+tgbridge-web = "webapp:main"
+
+[tool.setuptools]
+py-modules = ["webapp"]
+
+[tool.setuptools.packages.find]
+include = ["telegram_file_bridge*"]
+
+[tool.setuptools.package-data]
+telegram_file_bridge = ["env.example"]

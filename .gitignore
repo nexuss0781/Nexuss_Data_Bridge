@@ -1,0 +1,13 @@
+.env
+*.session
+*.session-journal
+.telegram-bridge-session*
+downloads/
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+reports/
